@@ -1,40 +1,29 @@
+package network
+
 import java.util.UUID
 
 import org.scalajs.dom
 import org.scalajs.dom._
 import org.scalajs.dom.experimental.webrtc._
-import org.scalajs.dom.ext.Color
 import upickle.default._
 
-
-sealed trait SocketMessage
-case class OfferRequest(userId: String) extends SocketMessage
-case class Offer(userId: String, `type`: String, sdp: String) extends SocketMessage
-case class Answer(userId: String, `type`: String, sdp: String) extends SocketMessage
-case class IceCandidateOutgoing(userId: String, candidate: String, sdpMLineIndex: Double) extends SocketMessage
-case class IceCandidateIncoming(userId: String, candidate: String, sdpMLineIndex: Double) extends SocketMessage
-
-case class PlayerState(coordinate: Coordinate, color: Color)
+import shared.SocketMessage
+import shared.SocketMessage._
 
 case class PendingConnection(peerConnection: RTCPeerConnection)
-case class OtherPlayer(dataChannel: RTCDataChannel, stateOpt: Option[PlayerState])
+case class Participant(dataChannel: RTCDataChannel)
 
-sealed trait RealTimeMessage
-case class InitialState(playerState: PlayerState) extends RealTimeMessage
-case class UpdateCoordinate(coordinate: Coordinate) extends RealTimeMessage
-
-
-class MultiplayerRoom(messageOnNewConnection: => RealTimeMessage, updateState: (RealTimeMessage, Option[PlayerState]) => Option[PlayerState]) {
+class MultiplayerRoom(onParticipantEnter: (String, Participant) => Unit, onParticipantLeave: (String) => Unit) {
 
   import scala.concurrent.ExecutionContext.Implicits.global
 
   var ws = new dom.WebSocket(s"ws://localhost:8080")
   var pendingConnections = Map[String, PendingConnection]()
-  var otherPlayers = Map[String, OtherPlayer]()
+  var otherParticipants = Map[String, Participant]()
 
   def disconnect(userId: String): Unit = {
     pendingConnections -= userId
-    otherPlayers -= userId
+    otherParticipants -= userId
   }
 
   def createPeerConnection(userId: String): RTCPeerConnection = {
@@ -62,40 +51,30 @@ class MultiplayerRoom(messageOnNewConnection: => RealTimeMessage, updateState: (
     peerConnection
   }
 
-  def sendMessage(dataChannel: RTCDataChannel, message: RealTimeMessage): Unit = {
-    dataChannel.send(upickle.default.write[RealTimeMessage](message))
-  }
-
   def handleDataChannel(userId: String, dataChannel: RTCDataChannel): Unit = {
 
     println(s"ondata channel ${dataChannel.label}")
 
     dataChannel.onclose = { event: Event =>
       println("CHANNEL CLOSED....")
-      otherPlayers -= userId
+      otherParticipants -= userId
+      onParticipantLeave(userId)
     }
 
     dataChannel.onerror = { event: Event =>
       println("CHANNEL ERRORED....")
-      otherPlayers -= userId
+      otherParticipants -= userId
+      onParticipantLeave(userId)
     }
 
     dataChannel.onopen = { event: Event =>
       println("CHANNEL OPENED...")
       pendingConnections -= userId
-      otherPlayers += userId -> OtherPlayer(dataChannel, None)
-      sendMessage(dataChannel, messageOnNewConnection)
+      val participant = Participant(dataChannel)
+      otherParticipants += userId -> participant
+      onParticipantEnter(userId, participant)
     }
 
-    dataChannel.onmessage = { event: MessageEvent =>
-      otherPlayers = otherPlayers.updated(
-        userId,
-        OtherPlayer(dataChannel, updateState(
-          upickle.default.read[RealTimeMessage](event.data.toString),
-          otherPlayers.get(userId).flatMap(_.stateOpt)
-        ))
-      )
-    }
   }
 
   def createPendingCallee(userId: String): PendingConnection = {
