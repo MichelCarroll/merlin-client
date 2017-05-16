@@ -9,17 +9,28 @@ import scala.scalajs.js.timers._
 import scala.util.Random
 import upickle.default._
 
-import network.{MultiplayerRoom, Participant}
+import network.MultiplayerRoom
 
 case class Coordinate(x: Int, y: Int)
 
-case class PlayerState(coordinate: Coordinate, color: Color)
+case class PlayerState(coordinate: Coordinate, color: Color) {
+
+  def execute(command: UserCommand): PlayerState = command match {
+    case Move(newCoordinate) => copy(coordinate = newCoordinate)
+  }
+
+}
+
+sealed trait UserCommand
+case class Move(coordinate: Coordinate) extends UserCommand
 
 sealed trait RealTimeMessage
 case class InitialState(playerState: PlayerState) extends RealTimeMessage
-case class UpdateCoordinate(coordinate: Coordinate) extends RealTimeMessage
+case class ExecuteCommand(command: UserCommand) extends RealTimeMessage
 
-case class OtherPlayer(participant: Participant, stateOpt: Option[PlayerState])
+case class Teammate(sendMessage: (RealTimeMessage) => Unit, state: PlayerState)
+
+case class GameState(teammates: Map[String, Teammate])
 
 object GameLoop {
 
@@ -33,45 +44,46 @@ object GameLoop {
     drawingContext.canvas.width = width
     drawingContext.canvas.height = height
 
-    val rng = new Random(System.currentTimeMillis())
-    val r = rng.nextInt(255)
-    val g = rng.nextInt(255)
-    val b = rng.nextInt(255)
-    val randomColor = Color(s"rgb($r, $g, $b)")
+    def randomColor: Color = {
+      val rng = new Random(System.currentTimeMillis())
+      val r = rng.nextInt(255)
+      val g = rng.nextInt(255)
+      val b = rng.nextInt(255)
+      Color(s"rgb($r, $g, $b)")
+    }
 
     var playerState = PlayerState(Coordinate(width / 2, height / 2), randomColor)
-    var otherPlayers = Map[String, OtherPlayer]()
+    var gameState = GameState(Map[String, Teammate]())
 
     val multiplayerRoom = new MultiplayerRoom(
       onParticipantEnter = (userId, participant) => {
-        otherPlayers += userId -> OtherPlayer(participant, None)
 
-        participant.dataChannel.send(write[RealTimeMessage](InitialState(playerState)))
+        val sendMessage = { message: RealTimeMessage =>
+          participant.dataChannel.send(write[RealTimeMessage](message))
+        }
+        sendMessage(InitialState(playerState))
 
         participant.dataChannel.onmessage = { event: MessageEvent =>
-          val message = read[RealTimeMessage](event.data.toString)
-          val newState = message match {
-            case InitialState(state) => Some(state)
+          read[RealTimeMessage](event.data.toString) match {
 
-            case UpdateCoordinate(coordinate) =>
-              otherPlayers(userId).stateOpt match {
-                case Some(lastState) =>
-                  Some(lastState.copy(coordinate = coordinate))
+            case InitialState(state) =>
+              gameState = gameState.copy(gameState.teammates + (userId -> Teammate(sendMessage, state)))
+
+            case ExecuteCommand(command) =>
+              gameState.teammates.get(userId) match {
+                case Some(teammate) =>
+                  gameState = gameState.copy(gameState.teammates.updated(userId, teammate.copy(state = teammate.state.execute(command))))
                 case _ =>
-                  None
               }
           }
-          otherPlayers = otherPlayers.updated(userId, OtherPlayer(participant, newState))
         }
 
       },
       onParticipantLeave = (userId) => {
-        otherPlayers -= userId
+        gameState = gameState.copy(gameState.teammates - userId)
       }
     )
 
-    var mouseWithinCanvas = false
-    var pressingDown = false
 
     def redraw(): Unit = {
 
@@ -91,8 +103,11 @@ object GameLoop {
       drawingContext.fillRect(0, 0, width, height)
 
       drawSquare(playerState.color, playerState.coordinate)
-      otherPlayers.values.flatMap(_.stateOpt).foreach(state => drawSquare(state.color, state.coordinate))
+      gameState.teammates.values.map(_.state).foreach(state => drawSquare(state.color, state.coordinate))
     }
+
+    var mouseWithinCanvas = false
+    var pressingDown = false
 
     drawingContext.canvas.onmousedown = { event: MouseEvent => pressingDown = true }
     drawingContext.canvas.onmouseup = { event: MouseEvent => pressingDown = false }
@@ -102,18 +117,17 @@ object GameLoop {
 
     drawingContext.canvas.onmousemove = { event: MouseEvent =>
       if(pressingDown && mouseWithinCanvas) {
-        playerState = playerState.copy(coordinate = Coordinate(event.clientX.toInt, event.clientY.toInt))
+        executeCommand(Move(Coordinate(event.clientX.toInt, event.clientY.toInt)))
       }
+    }
+
+    def executeCommand(command: UserCommand): Unit = {
+      playerState = playerState.execute(command)
+      gameState.teammates.values.foreach(_.sendMessage(ExecuteCommand(command)))
     }
 
     setInterval(1000 / 60) {
       redraw()
-    }
-
-    setInterval(1000 / 30) {
-      otherPlayers.foreach {
-        case (userId, player) => player.participant.dataChannel.send(write[RealTimeMessage](UpdateCoordinate(playerState.coordinate)))
-      }
     }
   }
 }
