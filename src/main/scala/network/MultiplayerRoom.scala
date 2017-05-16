@@ -13,7 +13,7 @@ import shared.SocketMessage._
 case class PendingConnection(peerConnection: RTCPeerConnection)
 case class Participant(dataChannel: RTCDataChannel)
 
-class MultiplayerRoom(onParticipantEnter: (String, Participant) => Unit, onParticipantLeave: (String) => Unit) {
+class MultiplayerRoom(onParticipantEnter: (String, Participant) => Unit, onParticipantLeave: (String) => Unit, onBecomeHost: () => Unit) {
 
   import scala.concurrent.ExecutionContext.Implicits.global
 
@@ -156,6 +156,9 @@ class MultiplayerRoom(onParticipantEnter: (String, Participant) => Unit, onParti
 
         case IceCandidateOutgoing(userId, candidate, sdpMLineIndex) =>
           println("SHOULD NEVER HAPPEN")
+
+        case BecomeHost(_) =>
+          onBecomeHost()
       }
     }
 

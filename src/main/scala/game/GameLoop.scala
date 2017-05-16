@@ -7,30 +7,30 @@ import org.scalajs.dom.ext.Color
 
 import scala.scalajs.js.timers._
 import scala.util.Random
-import upickle.default._
 
 import network.MultiplayerRoom
+
 
 case class Coordinate(x: Int, y: Int)
 
 case class PlayerState(coordinate: Coordinate, color: Color) {
 
-  def execute(command: UserCommand): PlayerState = command match {
+  def execute(command: GameCommand): PlayerState = command match {
     case Move(newCoordinate) => copy(coordinate = newCoordinate)
   }
 
 }
 
-sealed trait UserCommand
-case class Move(coordinate: Coordinate) extends UserCommand
+sealed trait GameCommand
+case class Move(coordinate: Coordinate) extends GameCommand
 
 sealed trait RealTimeMessage
 case class InitialState(playerState: PlayerState) extends RealTimeMessage
-case class ExecuteCommand(command: UserCommand) extends RealTimeMessage
+case class ExecuteCommand(command: GameCommand) extends RealTimeMessage
 
 case class Teammate(sendMessage: (RealTimeMessage) => Unit, state: PlayerState)
 
-case class GameState(teammates: Map[String, Teammate])
+case class GameState(isHost: Boolean, teammates: Map[String, Teammate])
 
 object GameLoop {
 
@@ -53,10 +53,12 @@ object GameLoop {
     }
 
     var playerState = PlayerState(Coordinate(width / 2, height / 2), randomColor)
-    var gameState = GameState(Map[String, Teammate]())
+    var gameState = GameState(isHost = false, teammates = Map[String, Teammate]())
 
     val multiplayerRoom = new MultiplayerRoom(
       onParticipantEnter = (userId, participant) => {
+
+        import upickle.default.{ read, write }
 
         val sendMessage = { message: RealTimeMessage =>
           participant.dataChannel.send(write[RealTimeMessage](message))
@@ -67,12 +69,14 @@ object GameLoop {
           read[RealTimeMessage](event.data.toString) match {
 
             case InitialState(state) =>
-              gameState = gameState.copy(gameState.teammates + (userId -> Teammate(sendMessage, state)))
+              gameState = gameState.copy(teammates = gameState.teammates + (userId -> Teammate(sendMessage, state)))
 
             case ExecuteCommand(command) =>
               gameState.teammates.get(userId) match {
                 case Some(teammate) =>
-                  gameState = gameState.copy(gameState.teammates.updated(userId, teammate.copy(state = teammate.state.execute(command))))
+                  gameState = gameState.copy(teammates =
+                    gameState.teammates.updated(userId,
+                      teammate.copy(state = teammate.state.execute(command))))
                 case _ =>
               }
           }
@@ -80,7 +84,10 @@ object GameLoop {
 
       },
       onParticipantLeave = (userId) => {
-        gameState = gameState.copy(gameState.teammates - userId)
+        gameState = gameState.copy(teammates = gameState.teammates - userId)
+      },
+      onBecomeHost = () => {
+        gameState = gameState.copy(isHost = true)
       }
     )
 
@@ -121,7 +128,7 @@ object GameLoop {
       }
     }
 
-    def executeCommand(command: UserCommand): Unit = {
+    def executeCommand(command: GameCommand): Unit = {
       playerState = playerState.execute(command)
       gameState.teammates.values.foreach(_.sendMessage(ExecuteCommand(command)))
     }
