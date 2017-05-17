@@ -10,5 +10,6 @@ scalaVersion := "2.11.4"
 
 libraryDependencies ++= Seq(
   "org.scala-js" %%% "scalajs-dom" % "0.9.0",
-  "com.lihaoyi" %%% "upickle" % "0.4.3"
+  "com.lihaoyi" %%% "upickle" % "0.4.3",
+  "com.softwaremill.quicklens" %%% "quicklens" % "1.4.8"
 )

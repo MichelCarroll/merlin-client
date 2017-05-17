@@ -1,15 +1,21 @@
 package game
 
+import scala.util.Random
+import com.softwaremill.quicklens._
 
 import org.scalajs.dom
 import org.scalajs.dom._
 import org.scalajs.dom.ext.Color
-
 import scala.scalajs.js.timers._
-import scala.util.Random
 
 import network.MultiplayerRoom
 
+
+
+sealed trait Enemy {
+  val coordinate: Coordinate
+}
+case class Slime(coordinate: Coordinate) extends Enemy
 
 case class Coordinate(x: Int, y: Int)
 
@@ -27,10 +33,14 @@ case class Move(coordinate: Coordinate) extends GameCommand
 sealed trait RealTimeMessage
 case class InitialState(playerState: PlayerState) extends RealTimeMessage
 case class ExecuteCommand(command: GameCommand) extends RealTimeMessage
+case class CurrentWorldState(worldState: WorldState) extends RealTimeMessage
 
 case class Teammate(sendMessage: (RealTimeMessage) => Unit, state: PlayerState)
 
-case class GameState(isHost: Boolean, teammates: Map[String, Teammate])
+case class PlayerId(id: String) extends AnyVal
+
+case class WorldState(enemies: Set[Enemy])
+case class GameState(isHost: Boolean, teammates: Map[PlayerId, Teammate], worldState: WorldState)
 
 object GameLoop {
 
@@ -41,11 +51,14 @@ object GameLoop {
     val width = 800
     val height = 600
 
+    val rng = new Random(System.currentTimeMillis())
+
+    def randomPositionOnCanvas = Coordinate(rng.nextInt(width), rng.nextInt(height))
+
     drawingContext.canvas.width = width
     drawingContext.canvas.height = height
 
     def randomColor: Color = {
-      val rng = new Random(System.currentTimeMillis())
       val r = rng.nextInt(255)
       val g = rng.nextInt(255)
       val b = rng.nextInt(255)
@@ -53,7 +66,11 @@ object GameLoop {
     }
 
     var playerState = PlayerState(Coordinate(width / 2, height / 2), randomColor)
-    var gameState = GameState(isHost = false, teammates = Map[String, Teammate]())
+    var gameState = GameState(
+      isHost = false,
+      teammates = Map[PlayerId, Teammate](),
+      worldState = WorldState(Set[Enemy]())
+    )
 
     val multiplayerRoom = new MultiplayerRoom(
       onParticipantEnter = (userId, participant) => {
@@ -69,22 +86,25 @@ object GameLoop {
           read[RealTimeMessage](event.data.toString) match {
 
             case InitialState(state) =>
-              gameState = gameState.copy(teammates = gameState.teammates + (userId -> Teammate(sendMessage, state)))
+              gameState = gameState.modify(_.teammates).using(_ + (PlayerId(userId) -> Teammate(sendMessage, state)))
 
             case ExecuteCommand(command) =>
-              gameState.teammates.get(userId) match {
+              gameState.teammates.get(PlayerId(userId)) match {
                 case Some(teammate) =>
-                  gameState = gameState.copy(teammates =
-                    gameState.teammates.updated(userId,
-                      teammate.copy(state = teammate.state.execute(command))))
+                  gameState = gameState
+                    .modify(_.teammates.at(PlayerId(userId)).state)
+                    .using(_.execute(command))
                 case _ =>
               }
+
+            case CurrentWorldState(worldState) =>
+              gameState = gameState.copy(worldState = worldState)
           }
         }
 
       },
       onParticipantLeave = (userId) => {
-        gameState = gameState.copy(teammates = gameState.teammates - userId)
+        gameState = gameState.modify(_.teammates).using(_ - PlayerId(userId))
       },
       onBecomeHost = () => {
         gameState = gameState.copy(isHost = true)
@@ -111,6 +131,9 @@ object GameLoop {
 
       drawSquare(playerState.color, playerState.coordinate)
       gameState.teammates.values.map(_.state).foreach(state => drawSquare(state.color, state.coordinate))
+      gameState.worldState.enemies.foreach {
+        case Slime(coordinate) => drawSquare(Color.Green, coordinate)
+      }
     }
 
     var mouseWithinCanvas = false
@@ -133,8 +156,18 @@ object GameLoop {
       gameState.teammates.values.foreach(_.sendMessage(ExecuteCommand(command)))
     }
 
-    setInterval(1000 / 60) {
+    setInterval(1000 / 60) { //60 fps
       redraw()
+    }
+
+    setInterval(5000) { //every 5 s
+      if(gameState.isHost)
+        gameState = gameState.modify(_.worldState.enemies).using(_ + Slime(randomPositionOnCanvas))
+    }
+
+    setInterval(1000 / 4) { // 4/s
+      if(gameState.isHost)
+        gameState.teammates.values.foreach(_.sendMessage(CurrentWorldState(gameState.worldState)))
     }
   }
 }
