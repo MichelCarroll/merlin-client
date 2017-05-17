@@ -17,7 +17,7 @@ class MultiplayerRoom(onParticipantEnter: (String, Participant) => Unit, onParti
 
   import scala.concurrent.ExecutionContext.Implicits.global
 
-  var ws = new dom.WebSocket(s"ws://localhost:8080")
+  var ws = new dom.WebSocket(s"ws://ec2-54-213-211-245.us-west-2.compute.amazonaws.com:8080")
   var pendingConnections = Map[String, PendingConnection]()
   var otherParticipants = Map[String, Participant]()
 
