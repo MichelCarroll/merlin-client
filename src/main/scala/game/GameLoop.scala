@@ -17,15 +17,12 @@ sealed trait Enemy {
 }
 case class Slime(coordinate: Coordinate) extends Enemy
 
-case class Coordinate(x: Int, y: Int)
-
-case class PlayerState(coordinate: Coordinate, color: Color) {
-
-  def execute(command: PlayerCommand): PlayerState = command match {
-    case Move(newCoordinate) => copy(coordinate = newCoordinate)
-  }
-
+case class Coordinate(x: Int, y: Int) {
+  def distanceFrom(coordinate: Coordinate): Double =
+    Math.sqrt(Math.pow(coordinate.x - x, 2) + Math.pow(coordinate.y - y, 2))
 }
+
+case class PlayerState(coordinate: Coordinate, color: Color)
 
 sealed trait PlayerCommand
 case class Move(coordinate: Coordinate) extends PlayerCommand
@@ -35,20 +32,18 @@ case class InitialState(playerState: PlayerState) extends RealTimeMessage
 case class ExecutePlayerCommand(command: PlayerCommand) extends RealTimeMessage
 case class CurrentWorldState(worldState: WorldState) extends RealTimeMessage
 
-case class Teammate(sendMessage: (RealTimeMessage) => Unit, state: PlayerState)
-
 case class PlayerId(id: String) extends AnyVal
 
 case class WorldState(enemies: Set[Enemy])
 
-case class GameState(isHost: Boolean, teammates: Map[PlayerId, Teammate], worldState: WorldState) {
-
+case class GameState(isHost: Boolean, players: Map[PlayerId, PlayerState], worldState: WorldState) {
 
   def execute(command: PlayerCommand, playerId: PlayerId): GameState = command match {
     case Move(newCoordinate) =>
       this
-        .modify(_.teammates.at(playerId).state.coordinate)
+        .modify(_.players.at(playerId).coordinate)
         .setTo(newCoordinate)
+        .copy(worldState = this.worldState.copy(enemies = this.worldState.enemies.filter(_.coordinate.distanceFrom(newCoordinate) > 50)))
   }
 
 }
@@ -76,10 +71,13 @@ object GameLoop {
       Color(s"rgb($r, $g, $b)")
     }
 
-    var playerState = PlayerState(Coordinate(width / 2, height / 2), randomColor)
+    val selfPlayerId = PlayerId("SELF")
+
+    var peers = Map[PlayerId, (RealTimeMessage) => Unit]()
+
     var gameState = GameState(
       isHost = false,
-      teammates = Map[PlayerId, Teammate](),
+      players = Map[PlayerId, PlayerState](selfPlayerId -> PlayerState(Coordinate(width / 2, height / 2), randomColor)),
       worldState = WorldState(Set[Enemy]())
     )
 
@@ -91,22 +89,17 @@ object GameLoop {
         val sendMessage = { message: RealTimeMessage =>
           participant.dataChannel.send(write[RealTimeMessage](message))
         }
-        sendMessage(InitialState(playerState))
+        sendMessage(InitialState(gameState.players(selfPlayerId)))
 
         participant.dataChannel.onmessage = { event: MessageEvent =>
           read[RealTimeMessage](event.data.toString) match {
 
             case InitialState(state) =>
-              gameState = gameState.modify(_.teammates).using(_ + (PlayerId(userId) -> Teammate(sendMessage, state)))
+              peers = peers + (PlayerId(userId) -> sendMessage)
+              gameState = gameState.modify(_.players).using(_ + (PlayerId(userId) -> state))
 
             case ExecutePlayerCommand(command) =>
-              gameState.teammates.get(PlayerId(userId)) match {
-                case Some(teammate) =>
-                  gameState = gameState
-                    .modify(_.teammates.at(PlayerId(userId)).state)
-                    .using(_.execute(command))
-                case _ =>
-              }
+              gameState = gameState.execute(command, PlayerId(userId))
 
             case CurrentWorldState(worldState) =>
               gameState = gameState.copy(worldState = worldState)
@@ -115,7 +108,8 @@ object GameLoop {
 
       },
       onParticipantLeave = (userId) => {
-        gameState = gameState.modify(_.teammates).using(_ - PlayerId(userId))
+        peers = peers - PlayerId(userId)
+        gameState = gameState.modify(_.players).using(_ - PlayerId(userId))
       },
       onBecomeHost = () => {
         gameState = gameState.copy(isHost = true)
@@ -140,8 +134,7 @@ object GameLoop {
       drawingContext.fillStyle = "black"
       drawingContext.fillRect(0, 0, width, height)
 
-      drawSquare(playerState.color, playerState.coordinate)
-      gameState.teammates.values.map(_.state).foreach(state => drawSquare(state.color, state.coordinate))
+      gameState.players.values.foreach(state => drawSquare(state.color, state.coordinate))
       gameState.worldState.enemies.foreach {
         case Slime(coordinate) => drawSquare(Color.Red, coordinate)
       }
@@ -163,8 +156,8 @@ object GameLoop {
     }
 
     def executeCommand(command: PlayerCommand): Unit = {
-      playerState = playerState.execute(command)
-      gameState.teammates.values.foreach(_.sendMessage(ExecutePlayerCommand(command)))
+      gameState = gameState.execute(command, selfPlayerId)
+      peers.values.foreach(sendMessage => sendMessage(ExecutePlayerCommand(command)))
     }
 
     setInterval(1000 / 60) { //60 fps
@@ -178,7 +171,7 @@ object GameLoop {
 
     setInterval(1000 / 4) { // 4/s
       if(gameState.isHost)
-        gameState.teammates.values.foreach(_.sendMessage(CurrentWorldState(gameState.worldState)))
+        peers.values.foreach(sendMessage => sendMessage(CurrentWorldState(gameState.worldState)))
     }
   }
 }
