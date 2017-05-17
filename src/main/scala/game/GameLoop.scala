@@ -21,18 +21,18 @@ case class Coordinate(x: Int, y: Int)
 
 case class PlayerState(coordinate: Coordinate, color: Color) {
 
-  def execute(command: GameCommand): PlayerState = command match {
+  def execute(command: PlayerCommand): PlayerState = command match {
     case Move(newCoordinate) => copy(coordinate = newCoordinate)
   }
 
 }
 
-sealed trait GameCommand
-case class Move(coordinate: Coordinate) extends GameCommand
+sealed trait PlayerCommand
+case class Move(coordinate: Coordinate) extends PlayerCommand
 
 sealed trait RealTimeMessage
 case class InitialState(playerState: PlayerState) extends RealTimeMessage
-case class ExecuteCommand(command: GameCommand) extends RealTimeMessage
+case class ExecutePlayerCommand(command: PlayerCommand) extends RealTimeMessage
 case class CurrentWorldState(worldState: WorldState) extends RealTimeMessage
 
 case class Teammate(sendMessage: (RealTimeMessage) => Unit, state: PlayerState)
@@ -40,7 +40,18 @@ case class Teammate(sendMessage: (RealTimeMessage) => Unit, state: PlayerState)
 case class PlayerId(id: String) extends AnyVal
 
 case class WorldState(enemies: Set[Enemy])
-case class GameState(isHost: Boolean, teammates: Map[PlayerId, Teammate], worldState: WorldState)
+
+case class GameState(isHost: Boolean, teammates: Map[PlayerId, Teammate], worldState: WorldState) {
+
+
+  def execute(command: PlayerCommand, playerId: PlayerId): GameState = command match {
+    case Move(newCoordinate) =>
+      this
+        .modify(_.teammates.at(playerId).state.coordinate)
+        .setTo(newCoordinate)
+  }
+
+}
 
 object GameLoop {
 
@@ -88,7 +99,7 @@ object GameLoop {
             case InitialState(state) =>
               gameState = gameState.modify(_.teammates).using(_ + (PlayerId(userId) -> Teammate(sendMessage, state)))
 
-            case ExecuteCommand(command) =>
+            case ExecutePlayerCommand(command) =>
               gameState.teammates.get(PlayerId(userId)) match {
                 case Some(teammate) =>
                   gameState = gameState
@@ -132,7 +143,7 @@ object GameLoop {
       drawSquare(playerState.color, playerState.coordinate)
       gameState.teammates.values.map(_.state).foreach(state => drawSquare(state.color, state.coordinate))
       gameState.worldState.enemies.foreach {
-        case Slime(coordinate) => drawSquare(Color.Green, coordinate)
+        case Slime(coordinate) => drawSquare(Color.Red, coordinate)
       }
     }
 
@@ -151,9 +162,9 @@ object GameLoop {
       }
     }
 
-    def executeCommand(command: GameCommand): Unit = {
+    def executeCommand(command: PlayerCommand): Unit = {
       playerState = playerState.execute(command)
-      gameState.teammates.values.foreach(_.sendMessage(ExecuteCommand(command)))
+      gameState.teammates.values.foreach(_.sendMessage(ExecutePlayerCommand(command)))
     }
 
     setInterval(1000 / 60) { //60 fps
